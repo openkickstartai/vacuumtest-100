@@ -1,2 +1,66 @@
-# vacuumtest-100
-代码覆盖率是开发者最大的安慰剂。一个测试函数调用了被测代码、触碰了每一行，覆盖率报告显示 100% —— 但如果它从未断言任何有意义的行为，它就是一个空气测试：占用 CI 时间、提供虚假信心、在真正的 bug 面前形同虚设。VacuumTest 是一个 pytest 插件 + CLI ��...
+# VacuumTest 🧹
+
+**Audit your test suite for vacuum tests — tests that execute code but never verify anything.**
+
+Coverage tells you "code was executed." VacuumTest tells you "code was verified."
+
+## Detections
+
+| Category | Example |
+|---|---|
+| `assertion-free` | Test with no `assert`, `pytest.raises`, or `mock.assert_*` |
+| `tautological` | `assert True`, `assert x == x` |
+| `overbroad-raises` | `pytest.raises(Exception)` — catches everything |
+| `dead-assertion` | Assertions after `return` — never execute |
+| `empty-parametrize` | `@parametrize("x", [])` — zero cases run |
+| `type-only` | Only `isinstance()` checks, no value verification |
+
+## Install
+
+```bash
+pip install -r requirements.txt
+```
+
+## CLI Usage
+
+```bash
+# Scan current directory
+python vacuumtest.py
+
+# Scan specific path
+python vacuumtest.py tests/
+
+# Output as SARIF for CI
+python vacuumtest.py tests/ --format sarif > report.sarif
+
+# Output as JSON
+python vacuumtest.py tests/ --format json
+```
+
+## pytest Plugin
+
+```bash
+pytest -p pytest_vacuumtest --vacuum
+```
+
+Adds a **VacuumTest Assertion Audit** section to your terminal summary.
+
+## Example Output
+
+```
+⚠️  VacuumTest: 3 issue(s)
+
+  tests/test_api.py:12 [assertion-free] test_create_user → No assertions
+  tests/test_api.py:28 [tautological] test_health → assert True always passes
+  tests/test_db.py:45 [overbroad-raises] test_insert → pytest.raises(Exception) is too broad
+```
+
+## Run Tests
+
+```bash
+pytest test_vacuumtest.py -v
+```
+
+## License
+
+MIT
