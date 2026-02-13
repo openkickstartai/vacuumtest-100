@@ -1,5 +1,7 @@
 """Tests for VacuumTest analyzer — verifies all 6 detection categories."""
 from vacuumtest import Analyzer, format_text, to_sarif, Issue
+from vacuumtest import TautologicalAssertionDetector, TautologyFinding
+
 
 
 def _issues(src, cat=None):
@@ -113,3 +115,155 @@ def test_sarif_structure():
     assert sarif["runs"][0]["results"][0]["ruleId"] == "dead-assertion"
     assert sarif["runs"][0]["results"][0]["locations"][0][
         "physicalLocation"]["region"]["startLine"] == 5
+
+
+# ---------------------------------------------------------------------------
+# Helpers for TautologicalAssertionDetector tests
+# ---------------------------------------------------------------------------
+
+def _detect(src: str) -> list:
+    """Run detector on source and return all findings."""
+    detector = TautologicalAssertionDetector("test_sample.py", src)
+    return detector.detect(src)
+
+
+def _detect_pattern(src: str, pattern: str) -> list:
+    """Run detector and filter findings by pattern_name."""
+    return [f for f in _detect(src) if f.pattern_name == pattern]
+
+
+# ---------------------------------------------------------------------------
+# Pattern 1: assert_literal_true  (assert True / assert 1)
+# ---------------------------------------------------------------------------
+
+def test_tautological_assert_true_positive_bool():
+    """assert True is always tautological."""
+    findings = _detect_pattern("assert True\n", "assert_literal_true")
+    assert len(findings) == 1
+    assert findings[0].pattern_name == "assert_literal_true"
+    assert findings[0].lineno == 1
+
+
+def test_tautological_assert_true_positive_int_one():
+    """assert 1 is tautological (truthy constant)."""
+    findings = _detect_pattern("assert 1\n", "assert_literal_true")
+    assert len(findings) == 1
+
+
+def test_tautological_assert_true_negative_false():
+    """assert False is NOT tautological (it always fails)."""
+    findings = _detect_pattern("assert False\n", "assert_literal_true")
+    assert len(findings) == 0
+
+
+def test_tautological_assert_true_negative_variable():
+    """assert x (a variable) is NOT tautological — value unknown."""
+    findings = _detect_pattern("x = True\nassert x\n", "assert_literal_true")
+    assert len(findings) == 0
+
+
+# ---------------------------------------------------------------------------
+# Pattern 2: self_compare  (assert x == x)
+# ---------------------------------------------------------------------------
+
+def test_tautological_self_compare_positive_simple():
+    """assert x == x is a self-comparison tautology."""
+    findings = _detect_pattern("x = 5\nassert x == x\n", "self_compare")
+    assert len(findings) == 1
+
+
+def test_tautological_self_compare_positive_longer_name():
+    """Longer variable names should still be detected."""
+    findings = _detect_pattern("result = get()\nassert result == result\n", "self_compare")
+    assert len(findings) == 1
+
+
+def test_tautological_self_compare_negative_different_vars():
+    """assert x == y with different names must NOT be flagged."""
+    findings = _detect_pattern("assert x == y\n", "self_compare")
+    assert len(findings) == 0
+
+
+def test_tautological_self_compare_negative_noteq_operator():
+    """assert x != x uses NotEq, not Eq — not our pattern."""
+    findings = _detect_pattern("assert x != x\n", "self_compare")
+    assert len(findings) == 0
+
+
+# ---------------------------------------------------------------------------
+# Pattern 3: isinstance_object  (assert isinstance(x, object))
+# ---------------------------------------------------------------------------
+
+def test_tautological_isinstance_object_positive_simple():
+    """isinstance(x, object) is always True."""
+    findings = _detect_pattern("assert isinstance(x, object)\n", "isinstance_object")
+    assert len(findings) == 1
+    assert findings[0].pattern_name == "isinstance_object"
+
+
+def test_tautological_isinstance_object_positive_other_var():
+    """Works with any first argument."""
+    findings = _detect_pattern("assert isinstance(my_var, object)\n", "isinstance_object")
+    assert len(findings) == 1
+
+
+def test_tautological_isinstance_object_negative_int():
+    """isinstance(x, int) is a real check — not tautological."""
+    findings = _detect_pattern("assert isinstance(x, int)\n", "isinstance_object")
+    assert len(findings) == 0
+
+
+def test_tautological_isinstance_object_negative_str():
+    """isinstance(x, str) is a real check — not tautological."""
+    findings = _detect_pattern("assert isinstance(x, str)\n", "isinstance_object")
+    assert len(findings) == 0
+
+
+# ---------------------------------------------------------------------------
+# Pattern 4: len_gte_zero  (assert len(x) >= 0)
+# ---------------------------------------------------------------------------
+
+def test_tautological_len_gte_zero_positive_simple():
+    """len(x) >= 0 is always true."""
+    findings = _detect_pattern("assert len(x) >= 0\n", "len_gte_zero")
+    assert len(findings) == 1
+
+
+def test_tautological_len_gte_zero_positive_named_list():
+    """Same pattern with a different variable name."""
+    findings = _detect_pattern("assert len(items) >= 0\n", "len_gte_zero")
+    assert len(findings) == 1
+
+
+def test_tautological_len_gte_zero_negative_gte_one():
+    """len(x) >= 1 is a meaningful check."""
+    findings = _detect_pattern("assert len(x) >= 1\n", "len_gte_zero")
+    assert len(findings) == 0
+
+
+def test_tautological_len_gte_zero_negative_gt_zero():
+    """len(x) > 0 is meaningful (fails for empty)."""
+    findings = _detect_pattern("assert len(x) > 0\n", "len_gte_zero")
+    assert len(findings) == 0
+
+
+# ---------------------------------------------------------------------------
+# Cross-cutting: dataclass fields & no false positives on real assertions
+# ---------------------------------------------------------------------------
+
+def test_tautological_finding_fields():
+    """TautologyFinding carries file, lineno, col_offset, pattern, snippet."""
+    findings = _detect("assert True\n")
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.file == "test_sample.py"
+    assert f.lineno == 1
+    assert f.col_offset == 0
+    assert f.source_snippet == "assert True"
+
+
+def test_tautological_no_false_positive_real_assertion():
+    """A real assertion must produce zero findings."""
+    src = "assert result == 42\nassert isinstance(x, int)\nassert len(x) >= 1\n"
+    findings = _detect(src)
+    assert len(findings) == 0
