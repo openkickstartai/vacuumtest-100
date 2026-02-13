@@ -13,6 +13,17 @@ class Issue:
     msg: str
 
 
+@dataclass
+class TautologyFinding:
+    """A single detected tautological assertion."""
+    file: str
+    lineno: int
+    col_offset: int
+    pattern_name: str
+    source_snippet: str
+
+
+
 class Analyzer(ast.NodeVisitor):
     def __init__(self, path):
         self.path, self.issues = str(path), []
@@ -126,3 +137,139 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+class TautologicalAssertionDetector(ast.NodeVisitor):
+    """AST-based detector for tautological (always-true) assertions.
+
+    Identifies assertions that always pass and therefore verify nothing:
+
+    * ``assert True`` / ``assert 1``  — literal truthy constants
+    * ``assert x == x``              — self-comparison
+    * ``assert isinstance(x, object)`` — always True for any value
+    * ``assert len(x) >= 0``         — len() is always non-negative
+    """
+
+    def __init__(self, file: str = "<unknown>", source: str = "") -> None:
+        """Initialise detector.
+
+        Args:
+            file: Path to the source file being analysed.
+            source: Python source text (used for snippet extraction).
+        """
+        self.file: str = file
+        self.source: str = source
+        self.source_lines: list = source.splitlines() if source else []
+        self.findings: list = []
+
+    def detect(self, source: str) -> list:
+        """Parse *source* and return all tautological-assertion findings.
+
+        Args:
+            source: Python source code to analyse.
+
+        Returns:
+            List of :class:`TautologyFinding` instances.
+        """
+        self.source = source
+        self.source_lines = source.splitlines()
+        self.findings = []
+        tree = ast.parse(source)
+        self.visit(tree)
+        return self.findings
+
+    # -- internal helpers ----------------------------------------------------
+
+    def _snippet(self, node: ast.AST) -> str:
+        """Return the trimmed source line for *node*."""
+        idx = node.lineno - 1
+        if 0 <= idx < len(self.source_lines):
+            return self.source_lines[idx].strip()
+        return ""
+
+    def _add(self, node: ast.Assert, pattern_name: str) -> None:
+        """Record a tautological finding."""
+        self.findings.append(TautologyFinding(
+            file=self.file,
+            lineno=node.lineno,
+            col_offset=node.col_offset,
+            pattern_name=pattern_name,
+            source_snippet=self._snippet(node),
+        ))
+
+    # -- visitor -------------------------------------------------------------
+
+    def visit_Assert(self, node: ast.Assert) -> None:
+        """Check every ``assert`` statement for known tautological patterns."""
+        t = node.test
+        self._check_assert_literal_true(node, t)
+        self._check_self_compare(node, t)
+        self._check_isinstance_object(node, t)
+        self._check_len_gte_zero(node, t)
+        self.generic_visit(node)
+
+    # -- pattern checkers ----------------------------------------------------
+
+    def _check_assert_literal_true(self, node: ast.Assert, t: ast.expr) -> None:
+        """Detect ``assert True`` and ``assert 1``."""
+        if not isinstance(t, ast.Constant):
+            return
+        if t.value is True:
+            self._add(node, "assert_literal_true")
+        elif isinstance(t.value, int) and not isinstance(t.value, bool) and t.value == 1:
+            self._add(node, "assert_literal_true")
+
+    def _check_self_compare(self, node: ast.Assert, t: ast.expr) -> None:
+        """Detect ``assert x == x`` — comparing a value to itself."""
+        if (isinstance(t, ast.Compare)
+                and len(t.ops) == 1
+                and isinstance(t.ops[0], ast.Eq)
+                and len(t.comparators) == 1
+                and ast.dump(t.left) == ast.dump(t.comparators[0])):
+            self._add(node, "self_compare")
+
+    def _check_isinstance_object(self, node: ast.Assert, t: ast.expr) -> None:
+        """Detect ``assert isinstance(x, object)`` — always True."""
+        if not isinstance(t, ast.Call):
+            return
+        func = t.func
+        if (isinstance(func, ast.Name)
+                and func.id == "isinstance"
+                and len(t.args) == 2):
+            second = t.args[1]
+            if isinstance(second, ast.Name) and second.id == "object":
+                self._add(node, "isinstance_object")
+
+    def _check_len_gte_zero(self, node: ast.Assert, t: ast.expr) -> None:
+        """Detect ``assert len(x) >= 0`` — len() always returns >= 0."""
+        if not (isinstance(t, ast.Compare)
+                and len(t.ops) == 1
+                and len(t.comparators) == 1):
+            return
+        op = t.ops[0]
+        left = t.left
+        comp = t.comparators[0]
+        # assert len(x) >= 0
+        if (isinstance(op, ast.GtE)
+                and self._is_len_call(left)
+                and isinstance(comp, ast.Constant)
+                and isinstance(comp.value, int)
+                and not isinstance(comp.value, bool)
+                and comp.value == 0):
+            self._add(node, "len_gte_zero")
+            return
+        # assert 0 <= len(x)  (equivalent form)
+        if (isinstance(op, ast.LtE)
+                and isinstance(left, ast.Constant)
+                and isinstance(left.value, int)
+                and not isinstance(left.value, bool)
+                and left.value == 0
+                and self._is_len_call(comp)):
+            self._add(node, "len_gte_zero")
+
+    @staticmethod
+    def _is_len_call(node: ast.expr) -> bool:
+        """Return True if *node* is a call to the built-in ``len()``."""
+        return (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "len")
