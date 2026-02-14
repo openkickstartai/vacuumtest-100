@@ -1,4 +1,5 @@
 """VacuumTest pytest plugin — adds --vacuum flag for assertion audit."""
+import warnings
 from pathlib import Path
 from vacuumtest import Analyzer
 
@@ -15,11 +16,11 @@ def pytest_collection_modifyitems(session, config, items):
     for item in items:
         fspath = str(getattr(item, "path", item.fspath))
         if fspath not in seen:
-            seen.add(fspath)
-            try:
                 src = Path(fspath).read_text("utf-8")
                 issues.extend(Analyzer(fspath).analyze(src))
-            except Exception:
+            except Exception as exc:
+                warnings.warn(f"VacuumTest: skipped {fspath}: {exc}")
+                continue
                 continue
     config._vacuum_issues = issues
 
@@ -32,10 +33,8 @@ def pytest_terminal_summary(terminalreporter, config):
     if not issues:
         terminalreporter.write_line(
             "All tests have meaningful assertions!")
-        return
     terminalreporter.write_line(
-        f"{len(issues)} vacuum test issue(s) detected:\n")
+        f"\u26a0\ufe0f  {len(issues)} vacuum test issue(s) detected:\n")
     for i in issues:
         terminalreporter.write_line(
-            f"  {i.file}:{i.line} [{i.cat}] {i.func}")
-        terminalreporter.write_line(f"    -> {i.msg}")
+            f"  {i.file}:{i.line} [{i.cat}] {i.func} \u2192 {i.msg}")

@@ -37,9 +37,16 @@ python vacuumtest.py tests/ --format sarif > report.sarif
 python vacuumtest.py tests/ --format json
 ```
 
-## pytest Plugin
+The CLI exits with code **1** when issues are found, **0** when clean — plug it straight into your CI gate.
 
 ```bash
+# Register plugin and enable audit
+pytest -p pytest_vacuumtest --vacuum
+
+# Or add to conftest.py / pyproject.toml so your team doesn't forget:
+# [tool.pytest.ini_options]
+# addopts = "-p pytest_vacuumtest --vacuum"
+```
 pytest -p pytest_vacuumtest --vacuum
 ```
 
